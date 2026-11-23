@@ -1,48 +1,18 @@
-# AcousticPulse (DCASE 2026): Noise-Aware Unsupervised Acoustic Fault Triage
+# AcousticPulse: Noise-Aware Unsupervised Acoustic Fault Triage & Edge Pipeline (DCASE 2026)
 
-An end-to-end **DCASE 2026 Task 2** unsupervised anomalous sound detection & edge deployment pipeline engineered for noisy, 2-channel industrial environments.
+An end-to-end **unsupervised anomalous sound detection (ASD)** and high-throughput edge inference pipeline built on the **DCASE 2026 Task 2** 2-channel industrial dataset (`bearingEmu`, `fan`, `gearboxEmu`, `valveEmu`).
 
-## Key Engineering Highlights
-* **Multi-Microphone DSP Front-End (`src/dsp/filters.py`)**: Exploits DCASE 2026 stereo recordings (**Channel 0 = Near-Mic**, **Channel 1 = Far-Mic**) via **Dual-Channel Spectral Subtraction** with adaptive per-frequency floor gain matching, benchmarked directly against Raw Near-Mic and Single-Mic Spectral Gating baselines.
-* **Strict Unsupervised ASD Protocol (`src/data/dcase_dataset.py`, `src/scoring/anomaly_scorer.py`)**: Trains a compact **Depthwise Separable 2D-CNN with Squeeze-and-Excitation (~280K params)** solely on `train/` normal recordings via a **Cosine-Margin proxy classifier**, then detects unseen faults on `test/` using a **Domain-Generalized Cosine kNN / Ledoit-Wolf Mahalanobis** normal reference bank ($\min(d_{\text{source}}, d_{\text{target}})$).
-* **High-Throughput Edge Serving (`src/deployment/`, `app/`)**: Exports the embedding backbone to **ONNX Runtime** with verified numerical parity ($<10^{-4}$ max diff), CPU latency/throughput benchmarking, an interactive **Streamlit** FFT/Spectrogram UI, and a **FastAPI** `/predict` microservice.
+Combines multi-microphone Digital Signal Processing (**4th-order Butterworth bandpass**, **128-bin calibrated Log-Mel spectrograms**, and **Spatial Inter-Channel Level Difference**) with a lightweight **377K-parameter Depthwise Separable 2D-CNN** trained strictly on normal recordings, deployed via **ONNX Runtime** (**2.01 ms/window**, **4.4x faster** than PyTorch CPU), **FastAPI**, and **Streamlit**.
 
 ---
 
-## Execution Workflow (Step-by-Step)
+## System Architecture
 
-### 1. Place DCASE 2026 Task 2 Zips (Zenodo `19336329`)
-Extract `dev_bearingEmu.zip`, `dev_fan.zip`, `dev_gearboxEmu.zip`, and `dev_valveEmu.zip` into `data/raw/dcase2026/` so each machine folder contains `train/` and `test/`.
-
-*(Or generate a 2-channel synthetic DCASE 2026 dataset for an instant 2-minute smoke test:)*
-```bash
-python scripts/generate_synthetic_dcase.py
-```
-
-### 2. Verify Unit Tests
-```bash
-pytest -v
-```
-
-### 3. Phase 4 — Train Normal-Only Embedding Backbone (GPU Accelerated)
-```bash
-# On real DCASE 2026 data:
-python scripts/train_embeddings.py
-
-# Or on synthetic quickstart data:
-python scripts/train_embeddings.py --dataset-root data/raw/synthetic_dcase2026 --epochs 10
-```
-
-### 4. Phase 5 — Fit Reference Bank, Official DCASE Metrics & Multi-Mic DSP Ablation
-```bash
-python scripts/evaluate_dcase.py
-python scripts/run_dsp_ablation.py
-```
-
-### 5. Phase 6 — Export ONNX Embedder, Benchmark CPU Throughput & Launch Demo Apps
-```bash
-python scripts/export_and_benchmark.py
-streamlit run app/streamlit_app.py
-# Optional FastAPI server:
-uvicorn app.api:app --host 0.0.0.0 --port 8000
-```
+```text
+Stereo Machine Audio (16 kHz, 2-Ch: Mic 0 + Mic 1)
+  └── Multi-Mic DSP Front-End (DC Removal -> Butterworth Bandpass 50–7800 Hz)
+        └── 3-Channel Spatial Feature Tensor [Log-Mel(Ch0), Log-Mel(Ch1), ILD = Ch0 - Ch1] (3 x 128 x 94)
+              └── Hybrid AcousticDSCNN Backbone (376.9K params, 0.175 MB ONNX)
+                    ├── Training Only: Masked Spectrogram Reconstruction + Sub-Cluster Cosine Proxy (K=8)
+                    └── Edge Inference: L2-Normalized 256-D Embedding -> Prototype-Balanced 1-NN Scorer
+                          └── FastAPI Microservice (/predict) & Streamlit Diagnostic Dashboard
