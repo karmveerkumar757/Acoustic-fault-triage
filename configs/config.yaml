@@ -1,0 +1,88 @@
+project:
+  name: "acoustic-fault-triage-dcase2026"
+  version: "2.0-hybrid-spatial"
+  seed: 42
+  device: "auto" # Uses RTX 2050 CUDA automatically
+
+paths:
+  dataset_root: "data/raw/dcase2026"
+  checkpoint_path: "artifacts/checkpoints/best_hybrid_model.pt"
+  reference_bank_path: "artifacts/banks/normal_reference_bank.npz"
+  onnx_path: "artifacts/onnx/acoustic_hybrid_dscnn.onnx"
+  report_dir: "artifacts/reports"
+
+audio:
+  sample_rate: 16000
+  window_sec: 3.0         # 3.0s (48,000 samples) -> 94 frames at hop=512
+  eval_hop_sec: 1.75      # Overlapping sliding windows cover full 10s clip
+  near_channel: 0
+  far_channel: 1
+
+dsp:
+  # All modes output (3, 128, 94) tensors for fair apples-to-apples benchmarking:
+  #   "spatial_dual_mic"       : [Log-Mel(Ch0), Log-Mel(Ch1), ILD = Ch0 - Ch1]  (Recommended)
+  #   "spatial_dual_mic_gated" : Spectral-gated Ch0 & Ch1 + Gated ILD
+  #   "single_mic_gated"       : [Gated Log-Mel(Ch0), Delta, Delta2]
+  #   "raw_ch0"                : [Raw Log-Mel(Ch0), Delta, Delta2]
+  mode: "spatial_dual_mic"
+  apply_bandpass: true
+  lowcut_hz: 50.0
+  highcut_hz: 7800.0
+  filter_order: 4
+  n_fft: 1024
+  hop_length: 512         # Doubles freq resolution (128 mels) with same pixel area as 64x188
+  n_mels: 128
+  fmin: 50.0
+  fmax: 7800.0
+  # Fixed calibrated dB scaling (ref=1.0) preserves absolute energy/loudness anomalies!
+  db_offset: 35.0
+  db_scale: 30.0
+  single_mic:
+    prop_decrease: 0.70
+    noise_percentile: 15.0
+
+augmentation:
+  enabled: true
+  gain_db_range: [-3.0, 3.0] # Milder gain jitter preserves loudness-based anomaly cues
+  time_shift_prob: 0.5
+  spec_augment:
+    enabled: true
+    freq_mask_param: 12
+    time_mask_param: 12
+    num_masks: 1
+
+model:
+  in_channels: 3
+  embedding_dim: 256
+  width_mult: 1.0
+  dropout: 0.15
+  sub_clusters: 8         # 8 sub-prototypes per class prevents Neural Collapse on noAttribute machines
+  cosine_scale: 12.0      # Moderate temperature without margin collapse
+
+training:
+  batch_size: 64          # Uses <600 MB VRAM on RTX 2050
+  epochs: 30
+  learning_rate: 0.0015
+  weight_decay: 0.0001
+  val_split: 0.10         # Strictly from train/ normal clips only
+  recon_weight: 1.0       # Spectrogram reconstruction weight (prevents Neural Collapse!)
+  proxy_weight: 0.25      # Sub-cluster attribute proxy weight (structures embedding space)
+  early_stopping_patience: 7
+  num_workers: 0          # Safe default for Windows PowerShell
+
+scoring:
+  method: "proto_1nn"     # Winner from compare_scorers.py (0.5848 Omega)
+  knn_k: 5
+  target_knn_k: 1
+  emb_score_weight: 1.0
+  recon_score_weight: 0.0 # AE used as training regularizer only (prevents valve MSE inversion)
+  recon_top_frame_ratio: 0.15
+  threshold_percentile: 92.0
+
+evaluation:
+  pauc_max_fpr: 0.1
+
+benchmark:
+  warmup_runs: 20
+  timed_runs: 200
+  batch_sizes: [1, 8, 32]
